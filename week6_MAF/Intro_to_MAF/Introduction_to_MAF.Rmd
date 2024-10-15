@@ -3,6 +3,7 @@ title: "Introduction to MAF"
 author: Mahija Mogalipuvvu, adapted from Nicole Black, Wade Boohar
 date: 07/17/22
 updated: 10/3/24
+Nick Odani and Anmol Singhal
 ---
 
 ***Deliverables***
@@ -18,6 +19,29 @@ In this assignment, you will need to use your skills learned in class to demonst
 *Pre-Assignment*
 Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
 ```{r}
+library(maftools)
+library(TCGAbiolinks)
+library(ggplot2)
+
+clinical <- read.csv("/home1/odani/490_cluster/analysis_data/brca_clinical_data.csv")
+
+maf_query <- GDCquery(
+  project = 'TCGA-BRCA',
+  data.category = "Simple Nucleotide Variation",
+  access = "open", # we only have access to somatic mutations which are open access
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+#GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query) # as long as it runs, ignore any errors
+#maf <- read.csv("/home1/odani/490_cluster/analysis_data/maf.csv")
+
+maf_object <- read.maf(maf = maf,
+                       clinicalData = clinical, 
+                       isTCGA = TRUE)
+
 
 ```
 
@@ -25,6 +49,16 @@ Load all necessary packages, read in the clinical data.csv file you have in your
 *1*
 Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
 ```{r}
+
+race_NA_mask <- ifelse(maf_object@clinical.data$race == 'WHITE', T, F)
+
+clean_clinical_maf <- maf_object@clinical.data$race[race_NA_mask,]
+
+
+white_mask <- ifelse(maf_object@clinical.data$race == 'WHITE', T, F)
+black_mask <- ifelse(maf_object@clinical.data$race == 'BLACK OR AFRICAN AMERICAN', T, F)
+maf_object@clinical.data$White <- white_mask
+
 
 ```
 
@@ -34,6 +68,40 @@ Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the 
 Research it. What is the gene used for? Can you think of any reason for the discrepancy?
 ```{r}
 
+white_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[white_mask]
+white_maf <- subsetMaf(maf = maf_object,
+                       tsb = white_barcodes)
+
+black_barcodes <- maf_object@clinical.data$Tumor_Sample_Barcode[black_mask]
+black_maf <- subsetMaf(maf = maf_object,
+                       tsb = black_barcodes)
+
+white_maf.genes = getGeneSummary(white_maf)[1:10]
+black_maf.genes = getGeneSummary(black_maf)[1:10]
+mdt = merge(white_maf.genes[,.(Hugo_Symbol, MutatedSamples)], black_maf.genes[,.(Hugo_Symbol, MutatedSamples)], by = 'Hugo_Symbol', all = TRUE)
+mdt$MutatedSamples.x[is.na(mdt$MutatedSamples.x)] = 0
+mdt$MutatedSamples.y[is.na(mdt$MutatedSamples.y)] = 0
+mdt$max = apply(mdt[,.(MutatedSamples.x, MutatedSamples.y)], 1, max)
+mdt = mdt[order(max, decreasing = TRUE)]
+top_10_genes <-mdt[1:10, "Hugo_Symbol"]
+genes <- c('PIK3CA', 'TP53', 'TTN','CDH1', 'GATA3', 'MUC16', 'MAP3K1', 'KMT2C','HMCN1', 'FLG')
+
+coOncoplot(m1 = white_maf, 
+           m2 = black_maf, 
+           m1Name = "White", 
+           m2Name = "Black", 
+           genes = genes,
+           outer_mar = 3,
+           gene_mar = 2.5,
+           titleFontSize = 1.05,
+           borderCol = NA)
+
+ggsave("oncoplot_top_White/Black.png",
+       path = "/Desktop/qbio_490_nick_odani")
+
+#TP53 gene provides instructions for making a protein called p53, which acts as a tumor suppressor. So if this gene is mutated, then uncontrolled cell growth occurs leading to increased cancer development.
+
+
 ```
 
 
@@ -41,6 +109,29 @@ Research it. What is the gene used for? Can you think of any reason for the disc
 Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
 Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
 ```{r}
+geneA_maf <- subsetMaf(maf = maf_object,
+                       genes = "TP53") 
+mut_pats_geneA <- geneA_maf@clinical.data$Tumor_Sample_Barcode
+
+num_pats_geneA <- length(mut_pats_geneA)
+num_no_geneA <- dim(maf_object@clinical.data)[1]  - num_pats_geneA
+
+num_white_gene <- 207 #0.31 * 669
+num_black_gene <- 69 # 0.44 * 157
+
+contig <- matrix(c(      num_pats_geneA, 
+                         num_no_geneA,
+                         num_white_gene,
+                         num_black_gene), 
+                         nrow=2)
+contig
+
+mosaicplot(contig)
+
+fisher_test <- fisher.test(contig)
+fisher_test
+
+# odds ratio is 0.17 and p-value < 2.2e^-16. This suggests that the results we found are statistically significant.
 
 ```
 
@@ -49,7 +140,13 @@ Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and
 Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
 Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
 ```{r}
+lollipopPlot2(m1 = white_maf,
+           	m2 = black_maf,
+           	m1_name = 'White',
+           	m2_name = 'Black',
+           	gene = 'TP53')
 
+# white population seems to have a greater number of mutations, especially amongst P53_TAD.
 ```
 
 
@@ -58,4 +155,25 @@ Create your Overall_Survival_Status column and create a mafSurvival KM plot base
 Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
 ```{r}
 
+library(survival)
+library(survminer)
+
+race_mask <- (maf_object@clinical.data$race == "WHITE") | (maf_object@clinical.data$race == "BLACK OR AFRICAN AMERICAN")
+clean_maf_object <- maf_object@clinical.data[race_mask,]
+
+clean_maf_object$race <- ifelse(clean_maf_object$race == "WHITE", T, F)
+
+clean_maf_object$survival_time <- ifelse(clean_maf_object$vital_status == "Dead", clean_maf_object$death_days_to, clean_maf_object$last_contact_days_to)
+
+clean_maf_object$death_event <- clean_maf_object$vital_status == "Dead"
+
+survivial_object <- Surv(time = as.numeric(clean_maf_object$survival_time), event = clean_maf_object$death_event)
+fit_object <- survfit(survivial_object ~ clean_maf_object$race, data = clean_maf_object)
+
+survplot <- ggsurvplot(fit_object, pval=TRUE, ggtheme = theme(plot.margin = unit(c(1,1,1,1), "cm")), legend = "right")
+
+KM_plot <- survplot$plot + theme_bw() + theme(axis.title = element_text(size=20), axis.text = element_text(size=16), legend.title = element_text(size=16), legend.text=element_text((size=12)))
+KM_plot
+
+# There is a p-value of 0.82, which suggests that there is no difference. This differs from the other tests we ran, which suggests there may be an error or one test is better suited for our data.
 ```
